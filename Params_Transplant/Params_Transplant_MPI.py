@@ -6,7 +6,6 @@ import rasterio
 import os
 import sys
 import time
-import xarray as xr
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 from Water_Blance_Model import mYWBMnlS, abcdnlS, DWBMnlS
@@ -39,25 +38,28 @@ cali_end_list   = basin_info['cali_end']
 vali_start_list = basin_info['vali_start']
 vali_end_list   = basin_info['vali_end']
 
-# 集总式模型数据读取
-def get_data_lumped(basin, basin_idx):
-    filepath = f"../../../2025_03_Hydrological_Models/Data/New_Hydro_Climatic/NHC_{basin}.txt"
-    hc_data = pd.read_csv(filepath, sep = '\t', header=0, index_col='Time', parse_dates=['Time'])
-    cali_start = pd.to_datetime(f"{str(cali_start_list[basin_idx])}-01-01")
-    cali_end   = pd.to_datetime(f"{str(cali_end_list[basin_idx])}-12-31")
-    vali_start = pd.to_datetime(f"{str(vali_start_list[basin_idx])}-01-01")
-    vali_end   = pd.to_datetime(f"{str(vali_end_list[basin_idx])}-12-31")
-
-    cali_data = hc_data.loc[cali_start : cali_end]
-    vali_data = hc_data.loc[vali_start : vali_end]
-
-    x_cali = cali_data[['PRE_CRU', 'TMP_CRU', 'PET_CRU']].to_numpy()
-    y_cali = cali_data['RUN'].to_numpy()
-    x_vali = vali_data[['PRE_CRU', 'TMP_CRU', 'PET_CRU']].to_numpy()
-    y_vali = vali_data['RUN'].to_numpy()
-    return x_cali, y_cali, x_vali, y_vali
-
-def get_params_by_spatial_proximity(basin_properties, params, N, lon, lat):
+def get_params_by_SP_AM(basin_properties, params, N, lon, lat):
+    """
+    使用空间临近法（地理临近法）算术平均为目标流域获取参数。
+    
+    参数：
+    -----------
+    basin_properties : np.ndarray
+        所有流域属性的数组，形状为 (n_basins, 2)，第0列为经度，第1列为纬度。
+    params : np.ndarray
+        所有流域参数的数组，形状为 (n_basins, n_params)。
+    N : int
+        用于参数移植的供体流域数量
+    lon : float
+        目标流域中心点的经度
+    lat : float
+        目标流域中心点的纬度
+    
+    返回：
+    --------
+    np.ndarray
+        目标流域的参数（N个最近流域参数的平均值）。
+    """
     # 提取经纬度
     longitudes = basin_properties[:, 0]
     latitudes = basin_properties[:, 1]
@@ -76,6 +78,52 @@ def get_params_by_spatial_proximity(basin_properties, params, N, lon, lat):
     
     # 返回参数平均值
     return nearest_params.mean(axis=0)
+
+def get_params_by_SP_IDW(basin_properties, params, N, lon, lat):
+    """
+    使用空间临近法（地理临近法）反距离加权平均为目标流域获取参数。
+    
+    参数：
+    -----------
+    basin_properties : np.ndarray
+        所有流域属性的数组，形状为 (n_basins, 2)，第0列为经度，第1列为纬度。
+    params : np.ndarray
+        所有流域参数的数组，形状为 (n_basins, n_params)。
+    N : int
+        用于参数移植的供体流域数量
+    lon : float
+        目标流域中心点的经度
+    lat : float
+        目标流域中心点的纬度
+    
+    返回：
+    --------
+    np.ndarray
+        目标流域的参数（N个最近流域参数的平均值）。
+    """
+    # 提取经纬度
+    longitudes = basin_properties[:, 0]
+    latitudes = basin_properties[:, 1]
+
+    # 计算欧氏距离
+    distances = np.sqrt((longitudes - lon) ** 2 + (latitudes - lat) ** 2)
+    
+    # 找到距离最近的 N 个流域的索引
+    sorted_indices = np.argsort(distances)
+    # 如果第一个距离非常小，认为是目标流域本身
+    if distances[sorted_indices[0]] <= 1e-5:
+        return params[sorted_indices[0]]
+    
+    # 获取最近的 N 个流域参数和距离
+    nearest_params = params[sorted_indices[:N]]
+    nearest_distances = distances[sorted_indices[:N]]
+
+    # 计算反距离权重
+    weights = 1 / (nearest_distances + 1e-10)  # 防止除以零
+    weights /= weights.sum()
+
+    # 返回加权平均值
+    return (weights[:, np.newaxis] * nearest_params).sum(axis=0)
 
 def calculate_similarity(target_properties, basin_properties, method='mahalanobis'):
     if method == 'mahalanobis':
@@ -96,7 +144,7 @@ def calculate_similarity(target_properties, basin_properties, method='mahalanobi
     sorted_indices = np.argsort(similarities)
     return sorted_indices
 
-def get_params_by_physical_similarity(basin_properties, params, target_properties, N=5, method='mahalanobis'):
+def get_params_by_PS(basin_properties, params, target_properties, N=5, method='mahalanobis'):
     # 标准化流域属性
     scaler = StandardScaler()
     basin_properties_scaled = scaler.fit_transform(basin_properties)
@@ -166,47 +214,41 @@ Basin_Properties = pd.read_csv("../../Data/Properties/Basin_Properties.txt", sep
 params_mYWBM   = pd.read_csv("../../Data/Params/03_mYWBM_Best_Params_CF.txt", sep = '\t', header=0, index_col='stat_num')
 params_abcd    = pd.read_csv("../../Data/Params/03_abcd_Best_Params_CF.txt", sep = '\t', header=0, index_col='stat_num')
 params_DWBM    = pd.read_csv("../../Data/Params/03_DWBM_Best_Params_CF.txt", sep = '\t', header=0, index_col='stat_num')
+params_GmYWBM  = pd.read_csv("../../Data/Params/03_GmYWBM_Best_Params_CF.txt", sep = '\t', header=0, index_col='stat_num')
 
-# mYWBM模型结果数组
-cali_kge_YM_list = np.full((len(basin_list), 6), np.nan)
-vali_kge_YM_list = np.full((len(basin_list), 6), np.nan)
-cali_re_YM_list  = np.full((len(basin_list), 6), np.nan)
-vali_re_YM_list  = np.full((len(basin_list), 6), np.nan)
-# abcd模型结果数组
-cali_kge_AM_list = np.full((len(basin_list), 6), np.nan)
-vali_kge_AM_list = np.full((len(basin_list), 6), np.nan)
-cali_re_AM_list  = np.full((len(basin_list), 6), np.nan)
-vali_re_AM_list  = np.full((len(basin_list), 6), np.nan)
-# DWBM模型结果数组
-cali_kge_DM_list = np.full((len(basin_list), 6), np.nan)
-vali_kge_DM_list = np.full((len(basin_list), 6), np.nan)
-cali_re_DM_list  = np.full((len(basin_list), 6), np.nan)
-vali_re_DM_list  = np.full((len(basin_list), 6), np.nan)
+# 数组形状为(流域数量*参数数量)
+params_YM_SP_AM     = np.full((len(basin_list), 5), np.nan)
+params_YM_SP_IDW    = np.full((len(basin_list), 5), np.nan)
+params_YM_PS        = np.full((len(basin_list), 5), np.nan)
+params_YM_rf        = np.full((len(basin_list), 5), np.nan)
+params_YM_svm       = np.full((len(basin_list), 5), np.nan)
+params_YM_xgb       = np.full((len(basin_list), 5), np.nan)
 
-params_YM_spatial_proximity     = np.full((len(basin_list), 5), np.nan)
-params_YM_physical_similarity   = np.full((len(basin_list), 5), np.nan)
-params_YM_rf                    = np.full((len(basin_list), 5), np.nan)
-params_YM_svm                   = np.full((len(basin_list), 5), np.nan)
-params_YM_xgb                   = np.full((len(basin_list), 5), np.nan)
+params_AM_SP_AM     = np.full((len(basin_list), 5), np.nan)
+params_AM_SP_IDW    = np.full((len(basin_list), 5), np.nan)
+params_AM_PS        = np.full((len(basin_list), 5), np.nan)
+params_AM_rf        = np.full((len(basin_list), 5), np.nan)
+params_AM_svm       = np.full((len(basin_list), 5), np.nan)
+params_AM_xgb       = np.full((len(basin_list), 5), np.nan)
 
-params_AM_spatial_proximity    = np.full((len(basin_list), 5), np.nan)
-params_AM_physical_similarity  = np.full((len(basin_list), 5), np.nan)
-params_AM_rf                   = np.full((len(basin_list), 5), np.nan)
-params_AM_svm                  = np.full((len(basin_list), 5), np.nan)
-params_AM_xgb                  = np.full((len(basin_list), 5), np.nan)
+params_DM_SP_AM     = np.full((len(basin_list), 5), np.nan)
+params_DM_SP_IDW    = np.full((len(basin_list), 5), np.nan)
+params_DM_PS        = np.full((len(basin_list), 5), np.nan)
+params_DM_rf        = np.full((len(basin_list), 5), np.nan)
+params_DM_svm       = np.full((len(basin_list), 5), np.nan)
+params_DM_xgb       = np.full((len(basin_list), 5), np.nan)
 
-params_DM_spatial_proximity     = np.full((len(basin_list), 5), np.nan)
-params_DM_physical_similarity   = np.full((len(basin_list), 5), np.nan)
-params_DM_rf                    = np.full((len(basin_list), 5), np.nan)
-params_DM_svm                   = np.full((len(basin_list), 5), np.nan)
-params_DM_xgb                   = np.full((len(basin_list), 5), np.nan)
+params_GYM_SP_AM    = np.full((len(basin_list), 5), np.nan)
+params_GYM_SP_IDW   = np.full((len(basin_list), 5), np.nan)
+params_GYM_PS       = np.full((len(basin_list), 5), np.nan)
+params_GYM_rf       = np.full((len(basin_list), 5), np.nan)
+params_GYM_svm      = np.full((len(basin_list), 5), np.nan)
+params_GYM_xgb      = np.full((len(basin_list), 5), np.nan)
 
 def get_params(basin, Basin_Properties, params_mYWBM):
     # 获取该流域的经纬度
     basin_lon = Basin_Properties.loc[basin]['Longitude']
     basin_lat = Basin_Properties.loc[basin]['Latitude']
-    # 删除该流域的经纬度
-    Basin_Properties = Basin_Properties.drop(columns=['Longitude', 'Latitude'])
     # 获取率定的参数
     cali_params = params_mYWBM.loc[basin].to_numpy()
     # 获取流域属性
@@ -237,78 +279,112 @@ def process_basin(basin_idx):
     
     ## mYWBM
     cali_params, basin_properties, rest_properties, rest_params, basin_lon, basin_lat = get_params(
-        basin, Basin_Properties[['Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI', 'Longitude', 'Latitude']], params_mYWBM)
+        basin, Basin_Properties[['Longitude', 'Latitude', 'Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI']], params_mYWBM)
 
     scaler = StandardScaler()
-    source_properties_scaled = scaler.fit_transform(rest_properties)
-    target_properties_scaled = scaler.transform(basin_properties)
+    source_properties_scaled = scaler.fit_transform(rest_properties[:, 2:])
+    target_properties_scaled = scaler.transform(basin_properties[:, 2:])
 
     rf_model  = train_random_forest(source_properties_scaled, rest_params)
     svm_model = train_svm(source_properties_scaled, rest_params)
     xgb_model = train_xgboost(source_properties_scaled, rest_params)
 
-    pred_params_spatial_proximity = get_params_by_spatial_proximity(rest_properties, rest_params, 50, basin_lon, basin_lat)
-    pred_params_physical_similarity = get_params_by_physical_similarity(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
-    pred_params_rf  = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 1000, 1])
-    pred_params_svr = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 1000, 1])
-    pred_params_xgb = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 1000, 1])
+    pred_params_SP_AM   = get_params_by_SP_AM(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_SP_IDW  = get_params_by_SP_IDW(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_PS      = get_params_by_PS(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
+    pred_params_rf      = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
+    pred_params_svr     = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
+    pred_params_xgb     = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
 
-    params_YM_spatial_proximity[basin_idx]     = pred_params_spatial_proximity
-    params_YM_physical_similarity[basin_idx]   = pred_params_physical_similarity
-    params_YM_rf[basin_idx]                    = np.squeeze(pred_params_rf)
-    params_YM_svm[basin_idx]                   = np.squeeze(pred_params_svr)
-    params_YM_xgb[basin_idx]                   = np.squeeze(pred_params_xgb)
+    params_YM_SP_AM[basin_idx]      = pred_params_SP_AM
+    params_YM_SP_IDW[basin_idx]     = pred_params_SP_IDW
+    params_YM_PS[basin_idx]         = pred_params_PS
+    params_YM_rf[basin_idx]         = np.squeeze(pred_params_rf)
+    params_YM_svm[basin_idx]        = np.squeeze(pred_params_svr)
+    params_YM_xgb[basin_idx]        = np.squeeze(pred_params_xgb)
 
     ## abcd
     cali_params, basin_properties, rest_properties, rest_params, basin_lon, basin_lat = get_params(
-        basin, Basin_Properties[['Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI', 'Longitude', 'Latitude']], params_abcd)
+        basin, Basin_Properties[['Longitude', 'Latitude', 'Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI']], params_abcd)
 
     scaler = StandardScaler()
-    source_properties_scaled = scaler.fit_transform(rest_properties)
-    target_properties_scaled = scaler.transform(basin_properties)
+    source_properties_scaled = scaler.fit_transform(rest_properties[:, 2:])
+    target_properties_scaled = scaler.transform(basin_properties[:, 2:])
 
     rf_model  = train_random_forest(source_properties_scaled, rest_params)
     svm_model = train_svm(source_properties_scaled, rest_params)
     xgb_model = train_xgboost(source_properties_scaled, rest_params)
 
-    pred_params_spatial_proximity = get_params_by_spatial_proximity(rest_properties, rest_params, 50, basin_lon, basin_lat)
-    pred_params_physical_similarity = get_params_by_physical_similarity(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
-    pred_params_rf  = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
-    pred_params_svr = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
-    pred_params_xgb = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
+    pred_params_SP_AM   = get_params_by_SP_AM(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_SP_IDW  = get_params_by_SP_IDW(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_PS      = get_params_by_PS(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
+    pred_params_rf      = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
+    pred_params_svr     = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
+    pred_params_xgb     = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 100, 0, 0, 0], [1, 2000, 1, 1, 1])
 
-    params_AM_spatial_proximity[basin_idx]     = pred_params_spatial_proximity
-    params_AM_physical_similarity[basin_idx]   = pred_params_physical_similarity
-    params_AM_rf[basin_idx]                    = np.squeeze(pred_params_rf)
-    params_AM_svm[basin_idx]                   = np.squeeze(pred_params_svr)
-    params_AM_xgb[basin_idx]                   = np.squeeze(pred_params_xgb)
+    params_AM_SP_AM[basin_idx]      = pred_params_SP_AM
+    params_AM_SP_IDW[basin_idx]     = pred_params_SP_IDW
+    params_AM_PS[basin_idx]         = pred_params_PS
+    params_AM_rf[basin_idx]         = np.squeeze(pred_params_rf)
+    params_AM_svm[basin_idx]        = np.squeeze(pred_params_svr)
+    params_AM_xgb[basin_idx]        = np.squeeze(pred_params_xgb)
 
     ## DWBM模型
     cali_params, basin_properties, rest_properties, rest_params, basin_lon, basin_lat = get_params(
-        basin, Basin_Properties[['Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI', 'Longitude', 'Latitude']], params_DWBM)
+        basin, Basin_Properties[['Longitude', 'Latitude', 'Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI']], params_DWBM)
 
     scaler = StandardScaler()
-    source_properties_scaled = scaler.fit_transform(rest_properties)
-    target_properties_scaled = scaler.transform(basin_properties)
+    source_properties_scaled = scaler.fit_transform(rest_properties[:, 2:])
+    target_properties_scaled = scaler.transform(basin_properties[:, 2:])
 
     rf_model  = train_random_forest(source_properties_scaled, rest_params)
     svm_model = train_svm(source_properties_scaled, rest_params)
     xgb_model = train_xgboost(source_properties_scaled, rest_params)
 
-    pred_params_spatial_proximity = get_params_by_spatial_proximity(rest_properties, rest_params, 50, basin_lon, basin_lat)
-    pred_params_physical_similarity = get_params_by_physical_similarity(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
-    pred_params_rf  = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
-    pred_params_svr = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
-    pred_params_xgb = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
+    pred_params_SP_AM   = get_params_by_SP_AM(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_SP_IDW  = get_params_by_SP_IDW(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_PS      = get_params_by_PS(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
+    pred_params_rf      = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
+    pred_params_svr     = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
+    pred_params_xgb     = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 0, 100, 0, 0], [1, 1, 2000, 1, 1])
 
-    params_DM_spatial_proximity[basin_idx]     = pred_params_spatial_proximity
-    params_DM_physical_similarity[basin_idx]   = pred_params_physical_similarity
-    params_DM_rf[basin_idx]                    = np.squeeze(pred_params_rf)
-    params_DM_svm[basin_idx]                   = np.squeeze(pred_params_svr)
-    params_DM_xgb[basin_idx]                   = np.squeeze(pred_params_xgb)
+    params_DM_SP_AM[basin_idx]  = pred_params_SP_AM
+    params_DM_SP_IDW[basin_idx] = pred_params_SP_IDW
+    params_DM_PS[basin_idx]     = pred_params_PS
+    params_DM_rf[basin_idx]     = np.squeeze(pred_params_rf)
+    params_DM_svm[basin_idx]    = np.squeeze(pred_params_svr)
+    params_DM_xgb[basin_idx]    = np.squeeze(pred_params_xgb)
+
+    ## GmYWBM模型
+    cali_params, basin_properties, rest_properties, rest_params, basin_lon, basin_lat = get_params(
+        basin, Basin_Properties[['Longitude', 'Latitude', 'Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI']], params_GmYWBM)
+
+    scaler = StandardScaler()
+    source_properties_scaled = scaler.fit_transform(rest_properties[:, 2:])
+    target_properties_scaled = scaler.transform(basin_properties[:, 2:])
+
+    rf_model  = train_random_forest(source_properties_scaled, rest_params)
+    svm_model = train_svm(source_properties_scaled, rest_params)
+    xgb_model = train_xgboost(source_properties_scaled, rest_params)
+
+    pred_params_SP_AM   = get_params_by_SP_AM(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_SP_IDW  = get_params_by_SP_IDW(rest_properties, rest_params, 8, basin_lon, basin_lat)
+    pred_params_PS      = get_params_by_PS(rest_properties, rest_params, basin_properties, N=5, method='mahalanobis')
+    pred_params_rf      = clean_params(get_params_by_regression(target_properties_scaled, rf_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
+    pred_params_svr     = clean_params(get_params_by_regression(target_properties_scaled, svm_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
+    pred_params_xgb     = clean_params(get_params_by_regression(target_properties_scaled, xgb_model).reshape(1, -1), rest_params, [0, 0, 0.05, 100, 0], [2, 0.65, 0.95, 2000, 1])
+
+    params_GYM_SP_AM[basin_idx]     = pred_params_SP_AM
+    params_GYM_SP_IDW[basin_idx]    = pred_params_SP_IDW
+    params_GYM_PS[basin_idx]        = pred_params_PS
+    params_GYM_rf[basin_idx]        = np.squeeze(pred_params_rf)
+    params_GYM_svm[basin_idx]       = np.squeeze(pred_params_svr)
+    params_GYM_xgb[basin_idx]       = np.squeeze(pred_params_xgb)
 
     et = time.time()
     print(f"No. {basin_idx+1} 流域 {basin} 参数获取完成，耗时 {et - st:.4f} 秒")
+    sys.stdout.flush()
+
 
 max_workers = 14
 
@@ -340,38 +416,60 @@ if __name__ == "__main__":
         for future in as_completed(futures):
             future.result()
 
-    params_YM_spatial_proximity_df    = pd.DataFrame(params_YM_spatial_proximity, index=params_mYWBM.index, columns=params_mYWBM.columns)
-    params_YM_physical_similarity_df  = pd.DataFrame(params_YM_physical_similarity, index=params_mYWBM.index, columns=params_mYWBM.columns)
-    params_YM_rf_df                   = pd.DataFrame(params_YM_rf, index=params_mYWBM.index, columns=params_mYWBM.columns)
-    params_YM_svm_df                  = pd.DataFrame(params_YM_svm, index=params_mYWBM.index, columns=params_mYWBM.columns)
-    params_YM_xgb_df                  = pd.DataFrame(params_YM_xgb, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_SP_AM_df  = pd.DataFrame(params_YM_SP_AM, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_SP_IDW_df = pd.DataFrame(params_YM_SP_IDW, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_PS_df     = pd.DataFrame(params_YM_PS, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_rf_df     = pd.DataFrame(params_YM_rf, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_svm_df    = pd.DataFrame(params_YM_svm, index=params_mYWBM.index, columns=params_mYWBM.columns)
+    params_YM_xgb_df    = pd.DataFrame(params_YM_xgb, index=params_mYWBM.index, columns=params_mYWBM.columns)
 
-    params_AM_spatial_proximity_df    = pd.DataFrame(params_AM_spatial_proximity, index=params_abcd.index, columns=params_abcd.columns)
-    params_AM_physical_similarity_df  = pd.DataFrame(params_AM_physical_similarity, index=params_abcd.index, columns=params_abcd.columns)
-    params_AM_rf_df                   = pd.DataFrame(params_AM_rf, index=params_abcd.index, columns=params_abcd.columns)
-    params_AM_svm_df                  = pd.DataFrame(params_AM_svm, index=params_abcd.index, columns=params_abcd.columns)
-    params_AM_xgb_df                  = pd.DataFrame(params_AM_xgb, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_SP_AM_df  = pd.DataFrame(params_AM_SP_AM, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_SP_IDW_df = pd.DataFrame(params_AM_SP_IDW, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_PS_df     = pd.DataFrame(params_AM_PS, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_rf_df     = pd.DataFrame(params_AM_rf, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_svm_df    = pd.DataFrame(params_AM_svm, index=params_abcd.index, columns=params_abcd.columns)
+    params_AM_xgb_df    = pd.DataFrame(params_AM_xgb, index=params_abcd.index, columns=params_abcd.columns)
 
-    params_DM_spatial_proximity_df    = pd.DataFrame(params_DM_spatial_proximity, index=params_DWBM.index, columns=params_DWBM.columns)
-    params_DM_physical_similarity_df  = pd.DataFrame(params_DM_physical_similarity, index=params_DWBM.index, columns=params_DWBM.columns)
-    params_DM_rf_df                   = pd.DataFrame(params_DM_rf, index=params_DWBM.index, columns=params_DWBM.columns)
-    params_DM_svm_df                  = pd.DataFrame(params_DM_svm, index=params_DWBM.index, columns=params_DWBM.columns)
-    params_DM_xgb_df                  = pd.DataFrame(params_DM_xgb, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_SP_AM_df  = pd.DataFrame(params_DM_SP_AM, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_SP_IDW_df = pd.DataFrame(params_DM_SP_IDW, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_PS_df     = pd.DataFrame(params_DM_PS, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_rf_df     = pd.DataFrame(params_DM_rf, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_svm_df    = pd.DataFrame(params_DM_svm, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_DM_xgb_df    = pd.DataFrame(params_DM_xgb, index=params_DWBM.index, columns=params_DWBM.columns)
 
-    params_YM_spatial_proximity_df.to_csv("../../Results/Params_Transplant/mYWBM_Spatial_Proximity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_YM_physical_similarity_df.to_csv("../../Results/Params_Transplant/mYWBM_Physical_Similarity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_YM_rf_df.to_csv("../../Results/Params_Transplant/mYWBM_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_YM_svm_df.to_csv("../../Results/Params_Transplant/mYWBM_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_YM_xgb_df.to_csv("../../Results/Params_Transplant/mYWBM_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_SP_AM_df     = pd.DataFrame(params_GYM_SP_AM, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_GYM_SP_IDW_df    = pd.DataFrame(params_GYM_SP_IDW, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_GYM_PS_df        = pd.DataFrame(params_GYM_PS, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_GYM_rf_df        = pd.DataFrame(params_GYM_rf, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_GYM_svm_df       = pd.DataFrame(params_GYM_svm, index=params_DWBM.index, columns=params_DWBM.columns)
+    params_GYM_xgb_df       = pd.DataFrame(params_GYM_xgb, index=params_DWBM.index, columns=params_DWBM.columns)
 
-    params_AM_spatial_proximity_df.to_csv("../../Results/Params_Transplant/abcd_Spatial_Proximity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_AM_physical_similarity_df.to_csv("../../Results/Params_Transplant/abcd_Physical_Similarity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_AM_rf_df.to_csv("../../Results/Params_Transplant/abcd_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_AM_svm_df.to_csv("../../Results/Params_Transplant/abcd_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_AM_xgb_df.to_csv("../../Results/Params_Transplant/abcd_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_SP_AM_df.to_csv(f"../../Results/Params_Transplant/mYWBM_SP_AM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_SP_IDW_df.to_csv(f"../../Results/Params_Transplant/mYWBM_SP_IDW_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_PS_df.to_csv(f"../../Results/Params_Transplant/mYWBM_PS_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_rf_df.to_csv(f"../../Results/Params_Transplant/mYWBM_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_svm_df.to_csv(f"../../Results/Params_Transplant/mYWBM_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_YM_xgb_df.to_csv(f"../../Results/Params_Transplant/mYWBM_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
 
-    params_DM_spatial_proximity_df.to_csv("../../Results/Params_Transplant/DWBM_Spatial_Proximity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_DM_physical_similarity_df.to_csv("../../Results/Params_Transplant/DWBM_Physical_Similarity_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_DM_rf_df.to_csv("../../Results/Params_Transplant/DWBM_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_DM_svm_df.to_csv("../../Results/Params_Transplant/DWBM_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
-    params_DM_xgb_df.to_csv("../../Results/Params_Transplant/DWBM_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_SP_AM_df.to_csv(f"../../Results/Params_Transplant/abcd_SP_AM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_SP_IDW_df.to_csv(f"../../Results/Params_Transplant/abcd_SP_IDW_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_PS_df.to_csv(f"../../Results/Params_Transplant/abcd_PS_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_rf_df.to_csv(f"../../Results/Params_Transplant/abcd_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_svm_df.to_csv(f"../../Results/Params_Transplant/abcd_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_AM_xgb_df.to_csv(f"../../Results/Params_Transplant/abcd_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+
+    params_DM_SP_AM_df.to_csv(f"../../Results/Params_Transplant/DWBM_SP_AM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_DM_SP_IDW_df.to_csv(f"../../Results/Params_Transplant/DWBM_SP_IDW_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_DM_PS_df.to_csv(f"../../Results/Params_Transplant/DWBM_PS_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_DM_rf_df.to_csv(f"../../Results/Params_Transplant/DWBM_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_DM_svm_df.to_csv(f"../../Results/Params_Transplant/DWBM_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_DM_xgb_df.to_csv(f"../../Results/Params_Transplant/DWBM_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+
+    params_GYM_SP_AM_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_SP_AM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_SP_IDW_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_SP_IDW_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_PS_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_PS_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_rf_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_RF_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_svm_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_SVM_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+    params_GYM_xgb_df.to_csv(f"../../Results/Params_Transplant/GmYWBM_XGB_Params_{rank}.txt", sep = '\t', float_format='%.4f')
+
+    comm.Barrier()

@@ -68,7 +68,7 @@ def train_xgboost(basin_properties_scaled, params):
     
     return xgb_model
 
-sim_results = pd.read_csv("../../Results/Weighted_Average/Weighted_Average_Results.txt", sep="\t", index_col='stat_num')[['w_ic_YM', 'w_ic_AM', 'w_ic_DM']].values
+sim_results = pd.read_csv("../../Results/Weighted_Average/Weighted_Average_Results_GRC.txt", sep="\t", index_col='stat_num')[['e_w_YM', 'e_w_AM', 'e_w_DM', 'e_w_GYM']].values
 
 def process_basin(b):
     basin = basin_list[b]
@@ -80,18 +80,25 @@ def process_basin(b):
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
 
+    y_scaler = StandardScaler()
+    y_train_scaled = y_scaler.fit_transform(y_train)
+
     # 获取当前流域属性
     target_properties = Basin_Properties.loc[basin, ['Climate', 'Clay', 'Silt', 'Sand', 'Slope', 'BFI', 'PRE', 'TMP', 'PET', 'TMAX', 'TMIN', 'AE', 'NDVI', 'TI']].values.reshape(1, -1)
     target_properties_scaled = scaler.transform(target_properties)
 
     # 训练并预测随机森林模型
-    rf_model  = train_random_forest(X_train_scaled, y_train)
-    svr_model = train_svm(X_train_scaled, y_train)
-    xgb_model = train_xgboost(X_train_scaled, y_train)
+    rf_model  = train_random_forest(X_train_scaled, y_train_scaled)
+    svr_model = train_svm(X_train_scaled, y_train_scaled)
+    xgb_model = train_xgboost(X_train_scaled, y_train_scaled)
 
-    rf_pred  = rf_model.predict(target_properties_scaled)[0]
-    svr_pred = svr_model.predict(target_properties_scaled)[0]
-    xgb_pred = xgb_model.predict(target_properties_scaled)[0]
+    rf_pred_scaled  = rf_model.predict(target_properties_scaled)[0]
+    svr_pred_scaled = svr_model.predict(target_properties_scaled)[0]
+    xgb_pred_scaled = xgb_model.predict(target_properties_scaled)[0]
+
+    rf_pred  = y_scaler.inverse_transform(rf_pred_scaled.reshape(1, -1))
+    svr_pred = y_scaler.inverse_transform(svr_pred_scaled.reshape(1, -1))
+    xgb_pred = y_scaler.inverse_transform(xgb_pred_scaled.reshape(1, -1))
 
     # 归一化，确保和为1
     rf_pred  = np.clip(rf_pred, 0, None)
@@ -100,6 +107,13 @@ def process_basin(b):
     rf_pred  = rf_pred / np.sum(rf_pred)
     svr_pred = svr_pred / np.sum(svr_pred)
     xgb_pred = xgb_pred / np.sum(xgb_pred)
+
+    if np.sum(rf_pred) > 1.1 or np.sum(rf_pred) < -1.1:
+        rf_pred  = rf_pred / np.sum(rf_pred)
+    if np.sum(svr_pred) > 1.1 or np.sum(svr_pred) < -1.1:
+        svr_pred  = svr_pred / np.sum(svr_pred)
+    if np.sum(xgb_pred) > 1.1 or np.sum(xgb_pred) < -1.1:
+        xgb_pred  = xgb_pred / np.sum(xgb_pred)
 
     pred_weight_rf.loc[basin]  = rf_pred
     pred_weight_svr.loc[basin] = svr_pred
@@ -128,9 +142,9 @@ start_list = idx_list[0, :]
 end_list = idx_list[1, :]
 
 if __name__ == "__main__":
-    pred_weight_rf  = pd.DataFrame(index=basin_list, columns=['w_ic_YM', 'w_ic_AM', 'w_ic_DM'])
-    pred_weight_svr = pd.DataFrame(index=basin_list, columns=['w_ic_YM', 'w_ic_AM', 'w_ic_DM'])
-    pred_weight_xgb = pd.DataFrame(index=basin_list, columns=['w_ic_YM', 'w_ic_AM', 'w_ic_DM'])
+    pred_weight_rf  = pd.DataFrame(index=basin_list, columns=['e_w_YM', 'e_w_AM', 'e_w_DM', 'e_w_GYM'])
+    pred_weight_svr = pd.DataFrame(index=basin_list, columns=['e_w_YM', 'e_w_AM', 'e_w_DM', 'e_w_GYM'])
+    pred_weight_xgb = pd.DataFrame(index=basin_list, columns=['e_w_YM', 'e_w_AM', 'e_w_DM', 'e_w_GYM'])
 
     pred_weight_rf.index.name  = 'stat_num'
     pred_weight_svr.index.name = 'stat_num'
@@ -141,8 +155,8 @@ if __name__ == "__main__":
         for future in as_completed(futures):
             future.result()
 
-    pred_weight_rf.to_csv(f"../../Results/Model_Weight_Transplant/Model_Weight_RF_Part{rank+1}.txt", sep="\t", float_format='%.4f')
-    pred_weight_svr.to_csv(f"../../Results/Model_Weight_Transplant/Model_Weight_SVR_Part{rank+1}.txt", sep="\t", float_format='%.4f')
-    pred_weight_xgb.to_csv(f"../../Results/Model_Weight_Transplant/Model_Weight_XGB_Part{rank+1}.txt", sep="\t", float_format='%.4f')
+    pred_weight_rf.to_csv(f"../../Results/Model_Weight_Transplant/E_Model_Weight_GRC_RF_Part{rank}.txt", sep="\t", float_format='%.4f')
+    pred_weight_svr.to_csv(f"../../Results/Model_Weight_Transplant/E_Model_Weight_GRC_SVR_Part{rank}.txt", sep="\t", float_format='%.4f')
+    pred_weight_xgb.to_csv(f"../../Results/Model_Weight_Transplant/E_Model_Weight_GRC_XGB_Part{rank}.txt", sep="\t", float_format='%.4f')
 
     comm.Barrier()
