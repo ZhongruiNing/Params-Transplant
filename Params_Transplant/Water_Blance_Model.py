@@ -285,26 +285,39 @@ def abcdnlS_RE(x, params):
 @njit
 def DWBM_single_step(P, PET, S0, G0, alpha1, alpha2, smax, d):
     X0 = smax - S0 + PET
-    if P == 0:
+    if alpha1 > 0.9:
+        alpha1 = 0.9
+    if alpha2 > 0.9:
+        alpha2 = 0.9
+    if P < 1e-2:
         X = 0.0
     else:
-        X  = P * Fu(X0 / P, alpha1)
+        if X0 / P > 20:
+            X = P
+        else:
+            X  = P * Fu(X0 / P, alpha1)
     Qd = max(P - X, 0.0)
 
     W  = max(X + S0, 0.0)
     Y0 = smax + PET
-    if W == 0:
-        Y = 0.0
+    if W < 1e-2:
+        Y = 0
     else:
-        Y  = W * Fu(Y0 / W, alpha2)
+        if Y0 / W > 20:
+            Y = W
+        else:
+            Y  = W * Fu(Y0 / W, alpha2)
     if not math.isfinite(Y):
         Y = 0.0
 
     R  = W - Y
-    if W == 0:
+    if W < 1e-2:
         AE = 0.0
     else:
-        AE = W * Fu(PET / W, alpha2)
+        if PET / W > 20:
+            AE = W
+        else:
+            AE = W * Fu(PET / W, alpha2)
     if not math.isfinite(AE):
         AE = 0.0
 
@@ -525,6 +538,7 @@ def mYWBM_single_step(P, PET, S0, b, Kg, alpha, smax):
         a1 = cal_a_from_W0(S_remain, smax, b)
         temp_PE = np.abs(a0 - a1)
         Qg = cal_run_gene(a1, temp_PE, smax, b)
+        Qg = np.round(Qg, 2)
     water_available = max(S_remain, 0.05 * smax)
     # 可用水量，用于计算蒸发。假设目前所有的降水落入土壤中，土壤水加上降水组成所有的可用水量
     water_available += P
@@ -556,6 +570,7 @@ def mYWBM_single_step(P, PET, S0, b, Kg, alpha, smax):
     a_remain = cal_a_from_W0(S_remain, smax, b)
     # 地表径流
     Qs = cal_run_gene(a_remain, PE, smax, b)
+    Qs = np.round(Qs, 2)
 
     # 迭代土壤含水量
     if a_remain + PE > WMM:
