@@ -108,6 +108,93 @@ def GR2M(x, params):
 
     return Q
 
+@njit
+def GR3M(x, params):
+    x1 = params[0]
+    x2 = params[1]
+    x3 = params[2]
+
+    P = x[:, 0]
+    E = x[:, 2]
+
+    n = len(P)
+
+    S = np.full(n, np.nan)
+    Q = np.full(n, np.nan)
+    R = np.full(n, np.nan)
+    S2 = np.full(n, np.nan)
+
+    S0 = x1
+    R0 = 0
+
+    for i in range(n):
+        vphi = np.tanh(P[i] / x1)
+        psi  = np.tanh(E[i] / x1)
+
+        S1 = (S0 + x1 * vphi) / (1 + vphi * (S0 / x1))
+        P1 = P[i] + S0 - S1
+        PS = P[i] - P1
+        S2[i] = S1 * (1 - psi) / (1 + psi * (1 - (S1 / x1)))
+        AE = S1 - S2[i]
+
+        S[i] = S2[i] / ((1 + (S2[i] / x1) ** 3) ** (1 / 3))
+
+        P2 = S2[i] - S0
+        P3 = P1 + P2
+        R1 = R0 + P3
+        R2 = x2 * R1
+
+        Q[i] = (R2 ** 2) / (R2 + x3)
+        R[i] = R2 - Q[i]
+
+        S0 = S[i]
+        R0 = R[i]
+
+    return Q
+@njit
+def GR3M_RE(x, params):
+    x1 = params[0]
+    x2 = params[1]
+    x3 = params[2]
+
+    P = x[:, 0]
+    E = x[:, 2]
+
+    n = len(P)
+
+    S = np.full(n, np.nan)
+    Q = np.full(n, np.nan)
+    R = np.full(n, np.nan)
+    S2 = np.full(n, np.nan)
+
+    S0 = x1
+    R0 = 0
+
+    for i in range(n):
+        vphi = np.tanh(P[i] / x1)
+        psi  = np.tanh(E[i] / x1)
+
+        S1 = (S0 + x1 * vphi) / (1 + vphi * (S0 / x1))
+        P1 = P[i] + S0 - S1
+        PS = P[i] - P1
+        S2[i] = S1 * (1 - psi) / (1 + psi * (1 - (S1 / x1)))
+        AE = S1 - S2[i]
+
+        S[i] = S2[i] / ((1 + (S2[i] / x1) ** 3) ** (1 / 3))
+
+        P2 = S2[i] - S0
+        P3 = P1 + P2
+        R1 = R0 + P3
+        R2 = x2 * R1
+
+        Q[i] = (R2 ** 2) / (R2 + x3)
+        R[i] = R2 - Q[i]
+
+        S0 = S[i]
+        R0 = R[i]
+
+    return Q, AE
+
 ### TPWB
 @njit
 def TPWB(x, params):
@@ -125,12 +212,45 @@ def TPWB(x, params):
     S0 = SC
 
     for i in range(n):
-        E[i] = c * P[i] * np.tanh(P[i] / PET[i])
+        E[i] = c * PET[i] * np.tanh(P[i] / PET[i])
+        E[i] = np.round(E[i], 3)
+        if E[i] > S0 + P[i]:
+            E[i] = S0 + P[i]
         S0 = S0 + P[i] - E[i]
+        S0 = np.round(S0, 3)
         Q[i] = S0 * np.tanh(S0 / SC)
+        Q[i] = np.round(Q[i], 3)
         S0 = S0 - Q[i]
-
+        S0 = np.round(S0, 3)
     return Q
+
+@njit
+def TPWB_RE(x, params):
+    c = params[0]
+    SC = params[1]
+
+    P = x[:, 0]
+    PET = x[:, 2]
+
+    n = len(P)
+
+    Q = np.full(n, np.nan)
+    E = np.full(n, np.nan)
+
+    S0 = SC
+
+    for i in range(n):
+        E[i] = c * PET[i] * np.tanh(P[i] / PET[i])
+        E[i] = np.round(E[i], 3)
+        if E[i] > S0 + P[i]:
+            E[i] = S0 + P[i]
+        S0 = S0 + P[i] - E[i]
+        S0 = np.round(S0, 3)
+        Q[i] = S0 * np.tanh(S0 / SC)
+        Q[i] = np.round(Q[i], 3)
+        S0 = S0 - Q[i]
+        S0 = np.round(S0, 3)
+    return Q, E
 
 ### abcd
 @njit
