@@ -280,3 +280,50 @@ lat_GRUN = flip(lat_GRUN);
 GRUN_data_interped = interp3(lon_GRUN_grid, lat_GRUN_grid, time_GRUN_grid, GRUN_data, lon_base3_grid, lat_base3_grid, time_base3_grid);
 
 write_nc3(strcat("../../Data/GRUN/GRUN_1901_2014.nc"), lon, lat, time_GRUN, GRUN_data_interped, "Runoff", "Natural runoff by GRUN dataset");
+
+%% GLEAM
+for year = 1980 : 2023
+    filepath = strcat("F:/GLEAM/v42a/E/E_", num2str(year), "_GLEAM_v4.2a_MO.nc");
+    
+    lon_GLEAM = single(ncread(filepath, "lon"));
+    lat_GLEAM = single(ncread(filepath, "lat"));
+    time_GLEAM = single(ncread(filepath, "time"));
+    
+    GLEAM_data = single(fliplr(rot90(ncread(filepath, "E"), 3)));
+    lat_GLEAM  = flip(lat_GLEAM);
+    
+    [lon_GLEAM_grid, lat_GLEAM_grid, time_GLEAM_grid] = meshgrid(lon_GLEAM, lat_GLEAM, time_GLEAM);
+    [lon_base3_grid, lat_base3_grid, time_base3_grid] = meshgrid(single(lon), single(lat), single(time_GLEAM));
+    
+    GELAM_data_interped = interp3(lon_GLEAM_grid, lat_GLEAM_grid, time_GLEAM_grid, GLEAM_data, lon_base3_grid, lat_base3_grid, time_base3_grid);
+    
+    outFile = strcat("F:/GLEAM/v42a/E/05/E_", num2str(year), "_05.nc");
+    nccreate(outFile, 'lon', 'Dimensions', {'lon', length(lon)});
+    nccreate(outFile, 'lat', 'Dimensions', {'lat', length(lat)});
+    nccreate(outFile, 'time', 'Dimensions', {'time', length(time_GLEAM)});
+    nccreate(outFile, 'E', 'Dimensions', {'lat', length(lat), 'lon', length(lon), 'time', length(time_GLEAM)}, 'Datatype', 'single');
+    ncwrite(outFile, 'lon', lon);
+    ncwrite(outFile, 'lat', lat);
+    ncwrite(outFile, 'time', time_GLEAM);
+    ncwrite(outFile, 'E', GELAM_data_interped);
+    
+    info = ncinfo(filepath);
+    
+    % 全局属性复制
+    for i = 1:length(info.Attributes)
+        name = info.Attributes(i).Name;
+        value = info.Attributes(i).Value;
+        ncwriteatt(outFile, '/', name, value);
+    end
+    
+    % 变量属性复制（lat/lon/time/E 除外或部分修改）
+    for v = 1:length(info.Variables)
+        varname = info.Variables(v).Name;
+        attrs = info.Variables(v).Attributes;
+        for a = 1:length(attrs)
+            if strcmp(attrs(a).Name, '_FillValue')
+                continue
+            end
+        end
+    end
+end
