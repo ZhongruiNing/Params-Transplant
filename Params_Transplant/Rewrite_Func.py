@@ -143,6 +143,27 @@ def pearson_correlation_coefficient(observation, simulation):
     return r
 
 @njit
+def relative_standard_deviation(observation, simulation):
+    """计算相对标准差 (rSD)"""
+    valid_obs, valid_sim, count = _get_valid_data(observation, simulation)
+    if count == 0:
+        return np.nan
+    # 计算均值
+    obs_mean = _cal_mean(valid_obs)
+    sim_mean = _cal_mean(valid_sim)
+    # 计算标准差
+    obs_std = 0.0
+    sim_std = 0.0
+    for i in range(count):
+        obs_std += (valid_obs[i] - obs_mean) ** 2
+        sim_std += (valid_sim[i] - sim_mean) ** 2
+    obs_std = np.sqrt(obs_std / count)
+    sim_std = np.sqrt(sim_std / count)
+    # 计算 rSD
+    rSD = (sim_std / sim_mean) / (obs_std / obs_mean) if obs_mean != 0 and sim_mean != 0 else np.nan
+    return rSD
+
+@njit
 def kling_gupta_efficiency(observation, simulation):
     """计算 Kling-Gupta 效率系数 (KGE)"""
     valid_obs, valid_sim, count = _get_valid_data(observation, simulation)
