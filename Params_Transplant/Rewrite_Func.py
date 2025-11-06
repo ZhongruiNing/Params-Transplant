@@ -160,7 +160,8 @@ def relative_standard_deviation(observation, simulation):
     obs_std = np.sqrt(obs_std / count)
     sim_std = np.sqrt(sim_std / count)
     # 计算 rSD
-    rSD = (sim_std / sim_mean) / (obs_std / obs_mean) if obs_mean != 0 and sim_mean != 0 else np.nan
+    # rSD = (sim_std / sim_mean) / (obs_std / obs_mean) if obs_mean != 0 and sim_mean != 0 else np.nan
+    rSD = sim_std / obs_std if obs_std != 0 else np.nan
     return rSD
 
 @njit
